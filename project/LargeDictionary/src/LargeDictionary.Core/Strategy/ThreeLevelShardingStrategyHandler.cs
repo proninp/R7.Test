@@ -1,35 +1,40 @@
 ﻿using System.Diagnostics.CodeAnalysis;
 using LargeDictionary.Core.Abstractions;
 using LargeDictionary.Core.Models;
+using Configuration = LargeDictionary.Core.Strategy.ThreeLevelStorageConfiguration;
 
 namespace LargeDictionary.Core.Strategy;
 
-public sealed class ThreeLevelShardingStrategyHandler<TValue> : IStorageDistributionStrategy<TValue>
+/// <summary>
+/// <inheritdoc/>
+/// </summary>
+/// <typeparam name="TValue"><inheritdoc/></typeparam>
+internal sealed class ThreeLevelShardingStrategyHandler<TValue> : IStorageDistributionStrategy<TValue>
 {
-    private const int FirstLevelBits = 21;
-    private const int SecondLevelBits = 21;
-    private const int ThirdLevelBits = 22;
-
-    private const int FirstLevelMask = (1 << FirstLevelBits) - 1;
-    private const int SecondLevelMask = (1 << SecondLevelBits) - 1;
-    private const int ThirdLevelMask = (1 << ThirdLevelBits) - 1;
-
     // Трёхуровневая структура для хранения до 2^62 элементов
     private readonly Dictionary<int, Dictionary<int, Dictionary<int, TValue>>> _storage;
-    private readonly long _capacity;
+    private readonly CapacityDistribution _distribution;
 
-    public ThreeLevelShardingStrategyHandler(long capacity = 0L)
+    public ThreeLevelShardingStrategyHandler(long capacity = 0L, ICapacityLevelsCalculator? calculator = null)
     {
         if (capacity < 0)
         {
             throw new ArgumentOutOfRangeException(nameof(capacity), capacity,
-                "Величина capacity не может быть отрицательной.");
+                "The value of capacity can not be less than zero.");
         }
-
-        _capacity = capacity;
-        _storage = new Dictionary<int, Dictionary<int, Dictionary<int, TValue>>>();
+        
+        var capacityLevelsCalculator = calculator ?? new CapacityLevelsCalculator();
+        _distribution = capacityLevelsCalculator.CalculateCapacities(capacity);
+        
+        _storage = new Dictionary<int, Dictionary<int, Dictionary<int, TValue>>>(_distribution.FirstLevelCapacity);
     }
 
+    /// <summary>
+    /// <inheritdoc/>
+    /// </summary>
+    /// <param name="key"><inheritdoc/></param>
+    /// <param name="value"><inheritdoc/></param>
+    /// <returns><inheritdoc/></returns>
     public bool TryAdd(long key, TValue value)
     {
         var keyHolder = SplitIndex(key);
@@ -37,6 +42,12 @@ public sealed class ThreeLevelShardingStrategyHandler<TValue> : IStorageDistribu
         return thirdLevelStorage.TryAdd(keyHolder.ThirdLevelKey, value);
     }
 
+    /// <summary>
+    /// <inheritdoc/>
+    /// </summary>
+    /// <param name="key"><inheritdoc/></param>
+    /// <param name="value"><inheritdoc/></param>
+    /// <returns><inheritdoc/></returns>
     public bool AddOrUpdate(long key, TValue value)
     {
         var keyHolder = SplitIndex(key);
@@ -46,6 +57,12 @@ public sealed class ThreeLevelShardingStrategyHandler<TValue> : IStorageDistribu
         return isNew;
     }
 
+    /// <summary>
+    /// <inheritdoc/>
+    /// </summary>
+    /// <param name="key"><inheritdoc/></param>
+    /// <param name="value"><inheritdoc/></param>
+    /// <returns><inheritdoc/></returns>
     public bool TryGetValue(long key, [NotNullWhen(true)] out TValue? value)
     {
         value = default;
@@ -63,6 +80,11 @@ public sealed class ThreeLevelShardingStrategyHandler<TValue> : IStorageDistribu
         return thirdLevelStorage.TryGetValue(keyHolder.ThirdLevelKey, out value);
     }
 
+    /// <summary>
+    /// <inheritdoc/>
+    /// </summary>
+    /// <param name="key"><inheritdoc/></param>
+    /// <returns><inheritdoc/></returns>
     public bool Remove(long key)
     {
         var keyHolder = SplitIndex(key);
@@ -93,15 +115,23 @@ public sealed class ThreeLevelShardingStrategyHandler<TValue> : IStorageDistribu
         return true;
     }
 
+    /// <summary>
+    /// <inheritdoc/>
+    /// </summary>
     public void Clear() => _storage.Clear();
 
+    /// <summary>
+    /// <inheritdoc/>
+    /// </summary>
+    /// <param name="key"><inheritdoc/></param>
+    /// <returns><inheritdoc/></returns>
     public bool ContainsKey(long key) => TryGetValue(key, out _);
 
     private Dictionary<int, Dictionary<int, TValue>> GetOrCreateSecondLevelStorage(LevelsKeyHolder keyHolder)
     {
         if (!_storage.TryGetValue(keyHolder.FirstLevelKey, out var secondLevelStorage))
         {
-            secondLevelStorage = new Dictionary<int, Dictionary<int, TValue>>();
+            secondLevelStorage = new Dictionary<int, Dictionary<int, TValue>>(_distribution.SecondLevelCapacity);
             _storage[keyHolder.FirstLevelKey] = secondLevelStorage;
         }
 
@@ -113,7 +143,7 @@ public sealed class ThreeLevelShardingStrategyHandler<TValue> : IStorageDistribu
         var secondLevelStorage = GetOrCreateSecondLevelStorage(keyHolder);
         if (!secondLevelStorage.TryGetValue(keyHolder.SecondLevelKey, out var thirdLevelStorage))
         {
-            thirdLevelStorage = new Dictionary<int, TValue>();
+            thirdLevelStorage = new Dictionary<int, TValue>(_distribution.ThirdLevelCapacity);
             secondLevelStorage[keyHolder.SecondLevelKey] = thirdLevelStorage;
         }
 
@@ -138,9 +168,10 @@ public sealed class ThreeLevelShardingStrategyHandler<TValue> : IStorageDistribu
     /// </remarks>
     private static LevelsKeyHolder SplitIndex(long index)
     {
-        var third = (int)(index & ThirdLevelMask);
-        var second = (int)((index >> ThirdLevelBits) & SecondLevelMask);
-        var first = (int)((index >> (ThirdLevelBits + SecondLevelBits)) & FirstLevelMask);
+        var third = (int)(index & Configuration.ThirdLevelMask);
+        var second = (int)((index >> Configuration.ThirdLevelBits) & Configuration.SecondLevelMask);
+        var first = (int)((index >> (Configuration.ThirdLevelBits + Configuration.SecondLevelBits)) &
+                          Configuration.FirstLevelMask);
 
         return new LevelsKeyHolder(first, second, third);
     }
