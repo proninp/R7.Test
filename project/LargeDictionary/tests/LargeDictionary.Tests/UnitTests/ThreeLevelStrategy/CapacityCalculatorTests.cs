@@ -33,13 +33,12 @@ public class CapacityCalculatorTests
     [InlineData(0)]
     [InlineData(-1)]
     [InlineData(long.MinValue)]
-    public void NonPositiveCapacity_Returns_Minimal_1_1_1(long capacity)
+    public void NonPositiveCapacity_Returns_Zero(long capacity)
     {
         var dist = Calculate(capacity);
-        Assert.Equal(1, dist.FirstLevelCapacity);
-        Assert.Equal(1, dist.SecondLevelCapacity);
-        Assert.Equal(1, dist.ThirdLevelCapacity);
-        AssertInvariants(1, dist); // трактуем как минимальное 1
+        Assert.Equal(0, dist.FirstLevelCapacity);
+        Assert.Equal(0, dist.SecondLevelCapacity);
+        Assert.Equal(0, dist.ThirdLevelCapacity);
     }
     
     [Fact]
@@ -91,6 +90,28 @@ public class CapacityCalculatorTests
     {
         var dist = Calculate(capacity);
         AssertInvariants(capacity <= 0 ? 1 : capacity, dist);
+    }
+    
+    [Theory]
+    [InlineData(100L, 1, 1, 100)]
+    [InlineData(1000L, 1, 1, 1000)]
+    [InlineData(10_000L, 1, 1, 10_000)]
+    public void CalculateCapacities_SmallCapacity_FitsInThirdLevel(
+        long capacity, 
+        int expectedFirst, 
+        int expectedSecond, 
+        int expectedThird)
+    {
+        // Arrange
+        var calculator = new CapacityLevelsCalculator();
+
+        // Act
+        var result = calculator.CalculateCapacities(capacity);
+
+        // Assert
+        Assert.Equal(expectedFirst, result.FirstLevelCapacity);
+        Assert.Equal(expectedSecond, result.SecondLevelCapacity);
+        Assert.Equal(expectedThird, result.ThirdLevelCapacity);
     }
     
     private CapacityDistribution Calculate(long c)
