@@ -11,9 +11,9 @@ public class LargeDictionary<TValue>
 
     public long Count => _count;
 
-    public LargeDictionary(IStorageDistributionStrategy<TValue>? strategy = null)
+    public LargeDictionary(long capacity = 0, IStorageDistributionStrategy<TValue>? strategy = null)
     {
-        _storage = strategy ?? new ThreeLevelShardingStrategyHandler<TValue>();
+        _storage = strategy ?? new ThreeLevelShardingStrategyHandler<TValue>(capacity);
         _count = 0;
     }
 
