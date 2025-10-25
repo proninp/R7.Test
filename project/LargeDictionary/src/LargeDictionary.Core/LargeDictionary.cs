@@ -1,66 +1,47 @@
-﻿using System.Collections;
-using System.Diagnostics.CodeAnalysis;
+﻿using System.Diagnostics.CodeAnalysis;
 using LargeDictionary.Core.Abstractions;
-using LargeDictionary.Core.Models;
+using LargeDictionary.Core.Strategy;
 
 namespace LargeDictionary.Core;
 
-public class LargeDictionary<TValue> : IEnumerable<KeyValuePair<long, TValue>>
+public class LargeDictionary<TValue>
 {
-    private readonly IMatrixDistributionStrategyHandler<TValue> _strategy;
-    private readonly Dictionary<int, Dictionary<int, Dictionary<long, TValue>>> _matrix;
+    private readonly IStorageDistributionStrategy<TValue> _storage;
     private long _count;
 
-    public LargeDictionary(long capacity = 0, IMatrixDistributionStrategyHandler<TValue>? strategy = null)
+    public long Count => _count;
+
+    public LargeDictionary(IStorageDistributionStrategy<TValue>? strategy = null)
     {
-        _strategy = strategy ?? new MatrixDistributionStrategyHandler<TValue>();
-        _matrix = _strategy.Initialize(capacity);
+        _storage = strategy ?? new ThreeLevelShardingStrategyHandler<TValue>();
         _count = 0;
     }
-
-    public long Count => _count;
 
     public TValue this[long key]
     {
         get
         {
-            var index = _strategy.Distribute(key);
-            if (!TryGetElement(index, out var value))
+            if (TryGetValue(key, out var value))
             {
-                throw new KeyNotFoundException($"Key '{key}' was not found in the dictionary.");
+                return value;
             }
-            return value;
+
+            throw new KeyNotFoundException($"The given key '{key}' was not present in the dictionary.");
         }
-        set
-        {
-            var index = _strategy.Distribute(key);
-            var segment = GetOrCreateSegment(index);
-            var isNewKey = !segment.ContainsKey(index.BucketIndex);
-            segment[key] = value;
-            if (isNewKey)
-            {
-                _count++;
-            }
-        }
+        set => AddOrUpdate(key, value);
     }
 
     public void Add(long key, TValue value)
     {
-        var index = _strategy.Distribute(key);
-        var segment = GetOrCreateSegment(index);
-        
-        if (!segment.TryAdd(index.BucketIndex, value))
+        if (!TryAdd(key, value))
         {
-            throw new ArgumentException($"Duplicate key {key}");
+            throw new ArgumentException($"An item with the same key has already been added. Key: {key}");
         }
-        _count++;
     }
 
-    public bool TryAdd(long key, TValue value)
+    public bool TryAdd(long key, TValue newValue)
     {
-        var index = _strategy.Distribute(key);
-        var segment = GetOrCreateSegment(index);
-        if (segment.TryAdd(index.BucketIndex, value))
+        if (_storage.TryAdd(key, newValue))
         {
             _count++;
             return true;
@@ -69,116 +50,48 @@ public class LargeDictionary<TValue> : IEnumerable<KeyValuePair<long, TValue>>
         return false;
     }
 
-    public bool TryGetValue(long key, [MaybeNullWhen(false)]out TValue value)
-    {
-        var index = _strategy.Distribute(key);
-        if (!TryGetSegment(index, out var segment))
-        {
-            value = default;
-            return false;
-        }
-        return segment.TryGetValue(index.BucketIndex, out value);
-    }
+    public bool TryGetValue(long key, [NotNullWhen(true)]out TValue? value) =>
+        _storage.TryGetValue(key, out value);
+
+    public bool ContainsKey(long key) => _storage.ContainsKey(key);
 
     public bool Remove(long key)
     {
-        var index = _strategy.Distribute(key);
-        if (!TryGetSegment(index, out var segment))
-        {
-            return false;
-        }
-
-        var isRemoved = segment.Remove(index.BucketIndex);
-        if (isRemoved)
+        if (_storage.Remove(key))
         {
             _count--;
-            if (segment.Count == 0)
-            {
-                _matrix[index.NodeIndex].Remove(index.SegmentIndex);
-            }
+            return true;
         }
-
-        return isRemoved;
-    }
-
-    public bool ContainsKey(long key)
-    {
-        var index = _strategy.Distribute(key);
-        TryGetSegment(index, out var segment);
-        return segment?.ContainsKey(index.BucketIndex) ?? false;
+        return false;
     }
 
     public void Clear()
     {
-        _matrix.Clear();
+        _storage.Clear();
         _count = 0;
     }
 
-    public IEnumerator<KeyValuePair<long, TValue>> GetEnumerator()
+    private void AddOrUpdate(long key, TValue value)
     {
-        foreach (var node in _matrix.Values)
+        var isNew = _storage.AddOrUpdate(key, value);
+        
+        if (isNew)
         {
-            foreach (var segment in node.Values)
-            {
-                foreach (var kvp in segment)
-                {
-                    yield return kvp;
-                }
-            }
+            _count++;
         }
     }
+    
+    public bool TryRemove(long key, out TValue? value) =>
+        TryGetValue(key, out value) && Remove(key);
 
-    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
-
-    private bool TryGetSegment(MatrixIndex index, [MaybeNullWhen(false)] out Dictionary<long, TValue> segment)
+    public TValue GetOrAdd(long key, TValue value)
     {
-        segment = null;
-        if (!_matrix.TryGetValue(index.NodeIndex, out var node))
+        if (TryGetValue(key, out var existingValue))
         {
-            return false;
+            return existingValue;
         }
 
-        if (!node.TryGetValue(index.SegmentIndex, out segment))
-        {
-            return false;
-        }
-        return true;
-    }
-
-    private Dictionary<long, TValue> GetOrCreateSegment(MatrixIndex index)
-    {
-        if (!_matrix.TryGetValue(index.NodeIndex, out var node))
-        {
-            node = new Dictionary<int, Dictionary<long, TValue>>();
-            _matrix.Add(index.NodeIndex, node);
-        }
-
-        if (!node.TryGetValue(index.SegmentIndex, out var segment))
-        {
-            segment = new Dictionary<long, TValue>();
-            node.Add(index.SegmentIndex, segment);
-        }
-        return segment;
-    }
-
-    private bool TryGetElement(MatrixIndex index, [MaybeNullWhen(false)] out TValue value)
-    {
-        value = default;
-        if (!_matrix.TryGetValue(index.NodeIndex, out var segments))
-        {
-            return false;
-        }
-
-        if (!segments.TryGetValue(index.SegmentIndex, out var segment))
-        {
-            return false;
-        }
-
-        if (!segment.TryGetValue(index.BucketIndex, out var segmentValue))
-        {
-            return false;
-        }
-        value = segmentValue;
-        return true;
+        Add(key, value);
+        return value;
     }
 }
